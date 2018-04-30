@@ -129,13 +129,8 @@ def hmm(observed, x, n_batch, n_steps, n_particles):
         def loop_body(i, prob, ta):
             logit = tf.reduce_sum(beta[:, tf.newaxis, :, tf.newaxis] *
                                   x[tf.newaxis, :, i, tf.newaxis, :], axis=3) + beta0[:, tf.newaxis, :]
-            logit = tf.sigmoid(logit)
-            P = tf.stack([logit, 1-logit], axis=3)
-            action_prob = tf.reduce_sum(
-                tf.multiply(P,
-                            prob[:, :, :, tf.newaxis]),
-                axis=2
-            )
+            P = tf.sigmoid(logit)
+            action_prob = tf.reduce_sum(tf.multiply(P, prob), axis=2)
             ta = ta.write(i, action_prob)
             prob = tf.reduce_sum(
                 tf.multiply(Q[tf.newaxis, tf.newaxis, :, :],
@@ -149,9 +144,10 @@ def hmm(observed, x, n_batch, n_steps, n_particles):
                                     loop_body, [i, prob, ta])
 
         action_prob = ta.stack()
-        action_prob = tf.transpose(action_prob, [1, 2, 0, 3])
+        action_prob = tf.transpose(action_prob, [1, 2, 0])
 
-        y = zs.Categorical('y', tf.log(action_prob), group_ndims=2)
+        y = zs.Bernoulli('y', tf.log(action_prob) -
+                         tf.log(1 - action_prob), group_ndims=2)
 
     return model
 
@@ -172,7 +168,8 @@ if __name__ == '__main__':
 
     def log_joint(observed):
         model = hmm(observed, x, n_batch, T, n_chains)
-        return model.local_log_prob('y') + model.local_log_prob('beta') + model.local_log_prob('beta0')
+        names = ['y', 'beta', 'beta0']
+        return sum(map(lambda name: model.local_log_prob(name), names))
 
     adapt_step_size = tf.placeholder(
         tf.bool, shape=[], name='adapt_step_size')
