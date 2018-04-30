@@ -51,7 +51,7 @@ def read_data():
 
     # y_it: array(741, 23, 1)
     # variable: 0'Gift(yes/no)'
-    y_it = tensor_all[:, :, [4]]
+    y_it = tensor_all[:, :, 4]
 
     # z_it: array(741, 23, 3) (personal information, static)
     # variable: 0'SAA member', 1'Spouse alum', 2'number of degrees'
@@ -105,33 +105,40 @@ def softmax(X, theta=1.0, axis=None):
     return p
 
 
-def hmm(observed, n_batch, n_steps, n_particles):
+def hmm(observed, x, n_batch, n_steps, n_particles):
     with zs.BayesianNet(observed=observed) as model:
-        # beta = zs.Normal('beta', mean=[0, 0, 0],
-        #                  std=30., n_samples=n_particles, group_ndims=1)
-        # beta0 = zs.Normal('beta0', mean=[0, 0, 0],
-        #                   std=30., n_samples=n_particles, group_ndims=1)
+        beta = zs.Normal('beta', mean=[0., 0., 0.],
+                         std=10., n_samples=n_particles, group_ndims=1)
+        beta0 = zs.Normal('beta0', mean=[0., 0., 0.],
+                          std=10., n_samples=n_particles, group_ndims=1)
 
-        pi = np.array([0.5, 0.5]).astype(np.float32)
-        q = zs.Normal('q', mean=[[0., 0.], [0., 0.]],
-                      std=10., n_samples=n_particles, group_ndims=2)
-        Q = tf.nn.softmax(q, axis=2)
+        pi = np.array([1., 0., 0.]).astype(np.float32)
 
-        P = np.array([[0.9, 0.1], [0.1, 0.9]]).astype(np.float32)
+        # q = zs.Normal('q', mean=[[0., 0.], [0., 0.]],
+        #               std=10., n_samples=n_particles, group_ndims=2)
+        # Q = tf.nn.softmax(q, axis=2)
+
+        Q = np.array([[0.3, 0.3, 0.4], [0.3, 0.3, 0.4], [
+                     0.3, 0.3, 0.4]]).astype(np.float32)
+        # P = np.array([[0.9, 0.1], [0.1, 0.9]]).astype(np.float32)
 
         prob = tf.tile(tf.expand_dims(pi, axis=0), [n_batch, 1])
         prob = tf.tile(tf.expand_dims(prob, axis=0), [n_particles, 1, 1])
         ta = tf.TensorArray(dtype=tf.float32, size=n_steps)
 
         def loop_body(i, prob, ta):
+            logit = tf.reduce_sum(beta[:, tf.newaxis, :, tf.newaxis] *
+                                  x[tf.newaxis, :, i, tf.newaxis, :], axis=3) + beta0[:, tf.newaxis, :]
+            logit = tf.sigmoid(logit)
+            P = tf.stack([logit, 1-logit], axis=3)
             action_prob = tf.reduce_sum(
-                tf.multiply(P[tf.newaxis, tf.newaxis, :, :],
+                tf.multiply(P,
                             prob[:, :, :, tf.newaxis]),
                 axis=2
             )
             ta = ta.write(i, action_prob)
             prob = tf.reduce_sum(
-                tf.multiply(Q[:, tf.newaxis, :, :],
+                tf.multiply(Q[tf.newaxis, tf.newaxis, :, :],
                             prob[:, :, :, tf.newaxis]),
                 axis=2
             )
@@ -151,18 +158,21 @@ def hmm(observed, n_batch, n_steps, n_particles):
 
 if __name__ == '__main__':
     tf.set_random_seed(42)
-    T = 10
-    n_batch = 10
-    y_observed = np.array([[0] * T] * n_batch).astype(np.int32)
+
+    a_it, x_it, y_it, z_it = read_data()
+    T = 23
+    n_batch = a_it.shape[0]
 
     n_chains = 10
     n_iters = 200
     burnin = n_iters // 2
     n_leapfrogs = 10
 
+    x = tf.placeholder(tf.float32, shape=[n_batch, T, 1])
+
     def log_joint(observed):
-        model = hmm(observed, n_batch, T, n_chains)
-        return model.local_log_prob('y') + model.local_log_prob('q')
+        model = hmm(observed, x, n_batch, T, n_chains)
+        return model.local_log_prob('y') + model.local_log_prob('beta') + model.local_log_prob('beta0')
 
     adapt_step_size = tf.placeholder(
         tf.bool, shape=[], name='adapt_step_size')
@@ -170,29 +180,40 @@ if __name__ == '__main__':
     hmc = zs.HMC(step_size=1e-3, n_leapfrogs=n_leapfrogs,
                  adapt_step_size=adapt_step_size, adapt_mass=adapt_mass,
                  target_acceptance_rate=0.9)
-    y = tf.placeholder(tf.int32, shape=[None, None])
-    q = tf.Variable(tf.zeros([n_chains, 2, 2]), trainable=False, name='q')
-    sample_op, hmc_info = hmc.sample(log_joint, {'y': y}, {'q': q})
+
+    y = tf.placeholder(tf.int32, shape=[n_batch, T])
+
+    beta = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta')
+    beta0 = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta0')
+
+    sample_op, hmc_info = hmc.sample(
+        log_joint, {'y': y}, {'beta': beta, 'beta0': beta0})
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
-        samples = []
+        beta_samples = []
+        beta0_samples = []
         print('Sampling...')
         for i in range(n_iters):
-            _, q_sample, acc, ss = sess.run(
-                [sample_op, hmc_info.samples['q'], hmc_info.acceptance_rate,
-                 hmc_info.updated_step_size],
+            _, beta_sample, beta0_sample, acc, ss = sess.run(
+                [sample_op,
+                 hmc_info.samples['beta'], hmc_info.samples['beta0'],
+                 hmc_info.acceptance_rate, hmc_info.updated_step_size],
                 feed_dict={adapt_step_size: i < burnin // 2,
                            adapt_mass: i < burnin // 2,
-                           y: y_observed})
+                           y: y_it, x: x_it})
             if i % 10 == 0:
                 print('Sample {}: Acceptance rate = {}, updated step size = {}'
                       .format(i, np.mean(acc), ss))
             if i >= burnin:
-                samples.append(softmax(q_sample, axis=2))
-                # samples.append(q_sample)
+                beta_samples.append(beta_sample)
+                beta0_samples.append(beta0_sample)
         print('Finished.')
-        samples = np.vstack(samples)
+        beta = np.vstack(beta_samples)
+        beta0 = np.vstack(beta0_samples)
 
-    print('Sample mean = {}'.format(np.mean(samples, axis=0)))
-    print('Sample stdev = {}'.format(np.std(samples, axis=0)))
+    print('beta mean = {}'.format(np.mean(beta, axis=0)))
+    print('beta stdev = {}'.format(np.std(beta, axis=0)))
+
+    print('beta0 mean = {}'.format(np.mean(beta0, axis=0)))
+    print('beta0 stdev = {}'.format(np.std(beta0, axis=0)))
