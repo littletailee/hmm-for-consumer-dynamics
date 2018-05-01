@@ -6,6 +6,11 @@ import tensorflow as tf
 import zhusuan as zs
 
 
+X_DIM = 1
+A_DIM = 2
+Z_DIM = 3
+
+
 def read_data():
     dat = pd.read_csv('act2000b.dat', sep='	')
     dat['volunteer'] = dat['volunteer'].apply(lambda x: 0 if x == '.' else 1)
@@ -106,21 +111,23 @@ def softmax(X, theta=1.0, axis=None):
 
 
 def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
-    X_DIM = 1
-    A_DIM = 3
     with zs.BayesianNet(observed=observed) as model:
         beta = zs.Normal('beta', mean=[0., 0., 0.],
                          std=10., n_samples=n_particles, group_ndims=1)
         beta0 = zs.Normal('beta0', mean=[0., 0., 0.],
                           std=10., n_samples=n_particles, group_ndims=1)
-        delta = zs.Normal('delta', mean=[[[0.] * 3] * 3] * 3, std=10.,
+        delta = zs.Normal('delta', mean=[[[0.] * Z_DIM] * 2] * 3, std=10.,
                           n_samples=n_particles, group_ndims=3)
         epsilon = zs.Normal('epsilon', mean=[[[0.] * 3] * 3] * n_batch, std=0.01,
                             n_samples=n_particles, group_ndims=3)
-        rho = zs.Normal('rho', mean=[[[0.] * A_DIM] * 3] * 3, std=10.,
+        rho = zs.Normal('rho', mean=[[[0.] * A_DIM] * 2] * 3, std=10.,
                         n_samples=n_particles, group_ndims=3)
 
-        pi = np.array([1., 0., 0.]).astype(np.float32)
+        beta0 = tf.stack([beta0[:, 0],
+                          beta0[:, 0] + tf.exp(beta0[:, 1]),
+                          beta0[:, 0] + tf.exp(beta0[:, 1]) + tf.exp(beta0[:, 2])], axis=1)
+
+        pi = np.array([1. / 3., 1. / 3, 1. / 3]).astype(np.float32)
 
         # [np, nb, 3, 3]
         mu = tf.reduce_sum(tf.multiply(
@@ -142,7 +149,13 @@ def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
 
             logits = tf.reduce_sum(a[tf.newaxis, :, i, tf.newaxis, tf.newaxis, :] *
                                    rho[:, tf.newaxis, :, :, :], axis=4) + mu
-            Q = tf.nn.softmax(logits, axis=3)
+            Q = tf.stack([
+                tf.sigmoid(logits[:, :, :, 0]),
+                tf.sigmoid(logits[:, :, :, 1]) -
+                tf.sigmoid(logits[:, :, :, 0]),
+                1 - tf.sigmoid(logits[:, :, :, 1])
+            ], axis=3)
+            # Q = tf.nn.softmax(logits, axis=3)
             prob = tf.reduce_sum(
                 tf.multiply(Q, prob[:, :, :, tf.newaxis]),
                 axis=2
@@ -166,19 +179,20 @@ if __name__ == '__main__':
     tf.set_random_seed(42)
 
     a_it, x_it, y_it, z_it = read_data()
-    a_it[:, :, 2] = (a_it[:, :, 2] - 1987) / 8
+    a_it = a_it[:, :, [0, 1]]
+    # a_it[:, :, 2] = (a_it[:, :, 2] - 1987) / 8
     x_it = (x_it - 18) / 8
     T = 23
     n_batch = a_it.shape[0]
 
     n_chains = 10
-    n_iters = 10000
-    burnin = 9000
-    n_leapfrogs = 10
+    n_burnin = 1000
+    n_sample = 1000
+    n_leapfrogs = 100
 
-    x = tf.placeholder(tf.float32, shape=[n_batch, T, 1])
-    a = tf.placeholder(tf.float32, shape=[n_batch, T, 3])
-    z = tf.placeholder(tf.float32, shape=[n_batch, 3])
+    x = tf.placeholder(tf.float32, shape=[n_batch, T, X_DIM])
+    a = tf.placeholder(tf.float32, shape=[n_batch, T, A_DIM])
+    z = tf.placeholder(tf.float32, shape=[n_batch, Z_DIM])
 
     def log_joint(observed):
         model = hmm(observed, x, a, z, n_batch, T, n_chains)
@@ -195,57 +209,85 @@ if __name__ == '__main__':
 
     y = tf.placeholder(tf.int32, shape=[n_batch, T])
 
-    # beta = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta')
-    # beta0 = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta0')
-    # delta = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
-    #                     trainable=False, name='delta')
-    # rho = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
-    #                   trainable=False, name='rho')
-
-    std = 0.1
+    std = 0.01
     beta = tf.get_variable('beta', shape=[n_chains, 3], trainable=False,
                            initializer=tf.random_normal_initializer(0, std))
     beta0 = tf.get_variable('beta0', shape=[n_chains, 3], trainable=False,
                             initializer=tf.random_normal_initializer(0, std))
-    delta = tf.get_variable('delta', shape=[n_chains, 3, 3, 3], trainable=False,
+    delta = tf.get_variable('delta', shape=[n_chains, 3, 2, Z_DIM], trainable=False,
                             initializer=tf.random_normal_initializer(0, std))
-    rho = tf.get_variable('rho', shape=[n_chains, 3, 3, 3], trainable=False,
+    rho = tf.get_variable('rho', shape=[n_chains, 3, 2, A_DIM], trainable=False,
                           initializer=tf.random_normal_initializer(0, std))
 
     sample_op, hmc_info = hmc.sample(
         log_joint, {'y': y}, {'beta': beta, 'beta0': beta0, 'delta': delta, 'rho': rho})
 
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-        beta_samples = []
-        beta0_samples = []
-        delta_samples = []
-        rho_samples = []
-        print('Sampling...')
-        for i in range(n_iters):
-            _, log_prob, beta_sample, \
-                beta0_sample, delta_sample, rho_sample, \
-                acc, ss = sess.run([sample_op,
-                                    hmc_info.log_prob,
-                                    hmc_info.samples['beta'], hmc_info.samples['beta0'],
-                                    hmc_info.samples['delta'], hmc_info.samples['rho'],
-                                    hmc_info.acceptance_rate, hmc_info.updated_step_size],
-                                   feed_dict={adapt_step_size: i < 2 * burnin - n_iters,
-                                              adapt_mass: i < 2 * burnin - n_iters,
-                                              y: y_it, x: x_it, a: a_it, z: z_it})
-            if i % 10 == 0:
-                print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
-                      .format(i, log_prob.mean(), np.mean(acc), ss))
-            if i >= burnin:
-                beta_samples.append(beta_sample)
-                beta0_samples.append(beta0_sample)
-                delta_samples.append(delta_sample)
-                rho_samples.append(rho_sample)
-        print('Finished.')
-        beta = np.stack(beta_samples, axis=1)
-        beta0 = np.stack(beta0_samples, axis=1)
-        delta = np.stack(delta_samples, axis=1)
-        rho = np.stack(rho_samples, axis=1)
+    sess = tf.Session()
+
+    sess.run(tf.global_variables_initializer())
+
+    beta_samples = []
+    beta0_samples = []
+    delta_samples = []
+    rho_samples = []
+
+    print('Sampling...')
+    for i in range(n_burnin):
+        _, log_prob, acc, ss = sess.run([sample_op,
+                                         hmc_info.log_prob,
+                                         hmc_info.acceptance_rate, hmc_info.updated_step_size],
+                                        feed_dict={adapt_step_size: True,
+                                                   adapt_mass: True,
+                                                   y: y_it, x: x_it, a: a_it, z: z_it})
+        print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
+              .format(i, log_prob.mean(), np.mean(acc), ss))
+
+    hmc = zs.HMC(step_size=1e-3, n_leapfrogs=10,
+                 adapt_step_size=adapt_step_size,
+                 adapt_mass=adapt_mass,
+                 target_acceptance_rate=0.8)
+    sample_op, hmc_info = hmc.sample(
+        log_joint, {'y': y}, {'beta': beta, 'beta0': beta0, 'delta': delta, 'rho': rho})
+
+    print('Stablizing...')
+    for i in range(n_sample):
+        _, log_prob, acc, ss = sess.run([sample_op,
+                                         hmc_info.log_prob,
+                                         hmc_info.acceptance_rate, hmc_info.updated_step_size],
+                                        feed_dict={adapt_step_size: True,
+                                                   adapt_mass: True,
+                                                   y: y_it, x: x_it, a: a_it, z: z_it})
+        print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
+              .format(i, log_prob.mean(), np.mean(acc), ss))
+
+    print('Final....')
+    for i in range(n_sample):
+        _, log_prob, beta_sample, \
+            beta0_sample, delta_sample, rho_sample, \
+            acc, ss = sess.run([sample_op,
+                                hmc_info.log_prob,
+                                hmc_info.samples['beta'], hmc_info.samples['beta0'],
+                                hmc_info.samples['delta'], hmc_info.samples['rho'],
+                                hmc_info.acceptance_rate, hmc_info.updated_step_size],
+                               feed_dict={adapt_step_size: False,
+                                          adapt_mass: False,
+                                          y: y_it, x: x_it, a: a_it, z: z_it})
+        if i % 10 == 0:
+            print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
+                  .format(i, log_prob.mean(), np.mean(acc), ss))
+        beta_samples.append(beta_sample)
+        beta0_samples.append(beta0_sample)
+        delta_samples.append(delta_sample)
+        rho_samples.append(rho_sample)
+
+    print('Finished.')
+
+    sess.close()
+
+    beta = np.stack(beta_samples, axis=1)
+    beta0 = np.stack(beta0_samples, axis=1)
+    delta = np.stack(delta_samples, axis=1)
+    rho = np.stack(rho_samples, axis=1)
 
     print('beta mean = {}'.format(np.mean(beta, axis=1)))
     print('beta stdev = {}'.format(np.std(beta, axis=1)))
