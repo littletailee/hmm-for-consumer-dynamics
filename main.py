@@ -172,10 +172,10 @@ if __name__ == '__main__':
     T = 23
     n_batch = a_it.shape[0]
 
-    n_chains = 1
-    n_iters = 1000
+    n_chains = 2
+    n_iters = 200
     burnin = n_iters // 2
-    n_leapfrogs = 10
+    n_leapfrogs = 2
 
     x = tf.placeholder(tf.float32, shape=[n_batch, T, 1])
     a = tf.placeholder(tf.float32, shape=[n_batch, T, 3])
@@ -183,8 +183,7 @@ if __name__ == '__main__':
 
     def log_joint(observed):
         model = hmm(observed, x, a, z, n_batch, T, n_chains)
-        # names = ['y', 'beta', 'beta0', 'delta', 'rho']
-        names = ['y']
+        names = ['y', 'beta', 'beta0', 'delta', 'rho']
         return sum(map(lambda name: model.local_log_prob(name), names))
 
     adapt_step_size = tf.placeholder(
@@ -197,12 +196,22 @@ if __name__ == '__main__':
 
     y = tf.placeholder(tf.int32, shape=[n_batch, T])
 
-    beta = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta')
-    beta0 = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta0')
-    delta = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
-                        trainable=False, name='delta')
-    rho = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
-                      trainable=False, name='rho')
+    # beta = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta')
+    # beta0 = tf.Variable(tf.zeros([n_chains, 3]), trainable=False, name='beta0')
+    # delta = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
+    #                     trainable=False, name='delta')
+    # rho = tf.Variable(tf.zeros([n_chains, 3, 3, 3]),
+    #                   trainable=False, name='rho')
+
+    std = 0.1
+    beta = tf.get_variable('beta', shape=[n_chains, 3], trainable=False,
+                           initializer=tf.random_normal_initializer(0, std))
+    beta0 = tf.get_variable('beta0', shape=[n_chains, 3], trainable=False,
+                            initializer=tf.random_normal_initializer(0, std))
+    delta = tf.get_variable('delta', shape=[n_chains, 3, 3, 3], trainable=False,
+                            initializer=tf.random_normal_initializer(0, std))
+    rho = tf.get_variable('rho', shape=[n_chains, 3, 3, 3], trainable=False,
+                          initializer=tf.random_normal_initializer(0, std))
 
     sample_op, hmc_info = hmc.sample(
         log_joint, {'y': y}, {'beta': beta, 'beta0': beta0, 'delta': delta, 'rho': rho})
@@ -226,7 +235,7 @@ if __name__ == '__main__':
                            y: y_it, x: x_it, a: a_it, z: z_it})
             if i % 10 == 0:
                 print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
-                      .format(i, log_prob, np.mean(acc), ss))
+                      .format(i, log_prob.mean(), np.mean(acc), ss))
             if i >= burnin:
                 beta_samples.append(beta_sample)
                 beta0_samples.append(beta0_sample)
