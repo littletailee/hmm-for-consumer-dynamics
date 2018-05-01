@@ -128,9 +128,6 @@ def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
             z[tf.newaxis, :, tf.newaxis, tf.newaxis, :]
         ), axis=4)
 
-        # Q = np.array([[0.3, 0.3, 0.4], [0.3, 0.3, 0.4],
-        #               [0.3, 0.3, 0.4]]).astype(np.float32)
-
         prob = tf.tile(tf.expand_dims(pi, axis=0), [n_batch, 1])
         prob = tf.tile(tf.expand_dims(prob, axis=0), [n_particles, 1, 1])
         ta = tf.TensorArray(dtype=tf.float32, size=n_steps)
@@ -169,13 +166,15 @@ if __name__ == '__main__':
     tf.set_random_seed(42)
 
     a_it, x_it, y_it, z_it = read_data()
+    a_it[:, :, 2] = (a_it[:, :, 2] - 1987) / 8
+    x_it = (x_it - 18) / 8
     T = 23
     n_batch = a_it.shape[0]
 
-    n_chains = 2
-    n_iters = 200
-    burnin = n_iters // 2
-    n_leapfrogs = 2
+    n_chains = 10
+    n_iters = 10000
+    burnin = 9000
+    n_leapfrogs = 10
 
     x = tf.placeholder(tf.float32, shape=[n_batch, T, 1])
     a = tf.placeholder(tf.float32, shape=[n_batch, T, 3])
@@ -224,15 +223,16 @@ if __name__ == '__main__':
         rho_samples = []
         print('Sampling...')
         for i in range(n_iters):
-            _, log_prob, beta_sample, beta0_sample, delta_sample, rho_sample, acc, ss = sess.run(
-                [sample_op,
-                 hmc_info.log_prob,
-                 hmc_info.samples['beta'], hmc_info.samples['beta0'],
-                 hmc_info.samples['delta'], hmc_info.samples['rho'],
-                 hmc_info.acceptance_rate, hmc_info.updated_step_size],
-                feed_dict={adapt_step_size: i < burnin // 2,
-                           adapt_mass: i < burnin // 2,
-                           y: y_it, x: x_it, a: a_it, z: z_it})
+            _, log_prob, beta_sample, \
+                beta0_sample, delta_sample, rho_sample, \
+                acc, ss = sess.run([sample_op,
+                                    hmc_info.log_prob,
+                                    hmc_info.samples['beta'], hmc_info.samples['beta0'],
+                                    hmc_info.samples['delta'], hmc_info.samples['rho'],
+                                    hmc_info.acceptance_rate, hmc_info.updated_step_size],
+                                   feed_dict={adapt_step_size: i < 2 * burnin - n_iters,
+                                              adapt_mass: i < 2 * burnin - n_iters,
+                                              y: y_it, x: x_it, a: a_it, z: z_it})
             if i % 10 == 0:
                 print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
                       .format(i, log_prob.mean(), np.mean(acc), ss))
@@ -242,19 +242,19 @@ if __name__ == '__main__':
                 delta_samples.append(delta_sample)
                 rho_samples.append(rho_sample)
         print('Finished.')
-        beta = np.vstack(beta_samples)
-        beta0 = np.vstack(beta0_samples)
-        delta = np.vstack(delta_samples)
-        rho = np.vstack(rho_samples)
+        beta = np.stack(beta_samples, axis=1)
+        beta0 = np.stack(beta0_samples, axis=1)
+        delta = np.stack(delta_samples, axis=1)
+        rho = np.stack(rho_samples, axis=1)
 
-    print('beta mean = {}'.format(np.mean(beta, axis=0)))
-    print('beta stdev = {}'.format(np.std(beta, axis=0)))
+    print('beta mean = {}'.format(np.mean(beta, axis=1)))
+    print('beta stdev = {}'.format(np.std(beta, axis=1)))
 
-    print('beta0 mean = {}'.format(np.mean(beta0, axis=0)))
-    print('beta0 stdev = {}'.format(np.std(beta0, axis=0)))
+    print('beta0 mean = {}'.format(np.mean(beta0, axis=1)))
+    print('beta0 stdev = {}'.format(np.std(beta0, axis=1)))
 
-    print('delta mean = {}'.format(np.mean(delta, axis=0)))
-    print('delta stdev = {}'.format(np.std(delta, axis=0)))
+    # print('delta mean = {}'.format(np.mean(delta, axis=0)))
+    # print('delta stdev = {}'.format(np.std(delta, axis=0)))
 
-    print('rho mean = {}'.format(np.mean(rho, axis=0)))
-    print('rho stdev = {}'.format(np.std(rho, axis=0)))
+    # print('rho mean = {}'.format(np.mean(rho, axis=0)))
+    # print('rho stdev = {}'.format(np.std(rho, axis=0)))
