@@ -65,51 +65,6 @@ def read_data():
     return a_it, x_it, y_it, z_it
 
 
-def softmax(X, theta=1.0, axis=None):
-    """
-    Compute the softmax of each element along an axis of X.
-
-    Parameters
-    ----------
-    X: ND-Array. Probably should be floats.
-    theta (optional): float parameter, used as a multiplier
-        prior to exponentiation. Default = 1.0
-    axis (optional): axis to compute values along. Default is the
-        first non-singleton axis.
-
-    Returns an array the same size as X. The result will sum to 1
-    along the specified axis.
-    """
-
-    # make X at least 2d
-    y = np.atleast_2d(X)
-
-    # find axis
-    if axis is None:
-        axis = next(j[0] for j in enumerate(y.shape) if j[1] > 1)
-
-    # multiply y against the theta parameter,
-    y = y * float(theta)
-
-    # subtract the max for numerical stability
-    y = y - np.expand_dims(np.max(y, axis=axis), axis)
-
-    # exponentiate y
-    y = np.exp(y)
-
-    # take the sum along the specified axis
-    ax_sum = np.expand_dims(np.sum(y, axis=axis), axis)
-
-    # finally: divide elementwise
-    p = y / ax_sum
-
-    # flatten f X was 1D
-    if len(X.shape) == 1:
-        p = p.flatten()
-
-    return p
-
-
 def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
     with zs.BayesianNet(observed=observed) as model:
         beta = zs.Normal('beta', mean=[0., 0., 0.],
@@ -120,7 +75,7 @@ def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
                           n_samples=n_particles, group_ndims=3)
         epsilon = zs.Normal('epsilon', mean=[[[0.] * 3] * 3] * n_batch, std=0.01,
                             n_samples=n_particles, group_ndims=3)
-        rho = zs.Normal('rho', mean=[[[0.] * A_DIM] * 2] * 3, std=10.,
+        rho = zs.Normal('rho', mean=[[0.] * A_DIM] * 3, std=10.,
                         n_samples=n_particles, group_ndims=3)
 
         beta0 = tf.stack([beta0[:, 0],
@@ -148,7 +103,7 @@ def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
             ta = ta.write(i, action_prob)
 
             logits = tf.reduce_sum(a[tf.newaxis, :, i, tf.newaxis, tf.newaxis, :] *
-                                   rho[:, tf.newaxis, :, :, :], axis=4) + mu
+                                   rho[:, tf.newaxis, :, tf.newaxis, :], axis=4) + mu
             Q = tf.stack([
                 tf.sigmoid(logits[:, :, :, 0]),
                 tf.sigmoid(logits[:, :, :, 1]) -
@@ -194,9 +149,8 @@ if __name__ == '__main__':
     a = tf.placeholder(tf.float32, shape=[n_batch, T, A_DIM])
     z = tf.placeholder(tf.float32, shape=[n_batch, Z_DIM])
 
-    def log_joint(observed):
+    def log_joint(observed, names=['y', 'beta', 'beta0', 'delta', 'rho']):
         model = hmm(observed, x, a, z, n_batch, T, n_chains)
-        names = ['y', 'beta', 'beta0', 'delta', 'rho']
         return sum(map(lambda name: model.local_log_prob(name), names))
 
     y = tf.placeholder(tf.int32, shape=[n_batch, T])
@@ -208,7 +162,7 @@ if __name__ == '__main__':
                             initializer=tf.random_normal_initializer(0, std))
     delta = tf.get_variable('delta', shape=[n_chains, 3, 2, Z_DIM], trainable=False,
                             initializer=tf.random_normal_initializer(0, std))
-    rho = tf.get_variable('rho', shape=[n_chains, 3, 2, A_DIM], trainable=False,
+    rho = tf.get_variable('rho', shape=[n_chains, 3, A_DIM], trainable=False,
                           initializer=tf.random_normal_initializer(0, std))
 
     adapt_step_size = tf.placeholder(
@@ -217,7 +171,7 @@ if __name__ == '__main__':
     hmc = zs.HMC(step_size=1e-3, n_leapfrogs=n_leapfrogs,
                  adapt_step_size=adapt_step_size,
                  adapt_mass=adapt_mass,
-                 target_acceptance_rate=0.8)
+                 target_acceptance_rate=0.65)
 
     sample_op, hmc_info = hmc.sample(
         log_joint, {'y': y}, {'beta': beta, 'beta0': beta0, 'delta': delta, 'rho': rho})
@@ -246,12 +200,12 @@ if __name__ == '__main__':
         _, log_prob, acc, ss = sess.run([sample_op,
                                          hmc_info.log_prob,
                                          hmc_info.acceptance_rate, hmc_info.updated_step_size],
-                                        feed_dict={adapt_step_size: i < 0.8 * n_burnin,
-                                                   adapt_mass: i < 0.8 * n_burnin,
+                                        feed_dict={adapt_step_size: i < n_burnin - n_sample,
+                                                   adapt_mass: i < n_burnin - n_sample,
                                                    y: y_it, x: x_it, a: a_it, z: z_it})
         if i % 10 == 0:
-            print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
-                  .format(i, log_prob.mean(), np.mean(acc), ss))
+            print('Sample {}: Log prob = {:.3f} ({:.3f}), Acceptance rate = {:.3f}, updated step size = {:.3e}'
+                  .format(i, log_prob.mean(), log_prob.std(), np.mean(acc), ss))
 
     beta_samples = []
     beta0_samples = []
@@ -271,14 +225,20 @@ if __name__ == '__main__':
                                           adapt_mass: False,
                                           y: y_it, x: x_it, a: a_it, z: z_it})
         if i % 10 == 0:
-            print('Sample {}: Log prob = {}, Acceptance rate = {:.3f}, updated step size = {:.3E}'
-                  .format(i, log_prob.mean(), np.mean(acc), ss))
+            print('Sample {}: Log prob = {:.3f} ({:.3f}), Acceptance rate = {:.3f}, updated step size = {:.3e}'
+                  .format(i, log_prob.mean(), log_prob.std(), np.mean(acc), ss))
         beta_samples.append(beta_sample)
         beta0_samples.append(beta0_sample)
         delta_samples.append(delta_sample)
         rho_samples.append(rho_sample)
 
     print('Finished.')
+
+    print(log_prob)
+
+    log_prob_data = sess.run(log_joint({'y': y, 'beta': beta, 'beta0': beta0,
+                                        'delta': delta, 'rho': rho}, ['y']))
+    print(log_prob_data)
 
     sess.close()
 
@@ -299,13 +259,18 @@ if __name__ == '__main__':
     # print('rho mean = {}'.format(np.mean(rho, axis=0)))
     # print('rho stdev = {}'.format(np.std(rho, axis=0)))
 
-    beta = np.vstack(beta_samples)
-    beta0 = np.vstack(beta0_samples)
-    delta = np.vstack(delta_samples)
-    rho = np.vstack(rho_samples)
+    index = log_prob > log_prob.mean()
+
+    beta = np.vstack(beta_samples[index])
+    beta0 = np.vstack(beta0_samples[index])
+    delta = np.vstack(delta_samples[index])
+    rho = np.vstack(rho_samples[index])
 
     print('beta mean = {}'.format(np.mean(beta, axis=0)))
     print('beta stdev = {}'.format(np.std(beta, axis=0)))
 
     print('beta0 mean = {}'.format(np.mean(beta0, axis=0)))
     print('beta0 stdev = {}'.format(np.std(beta0, axis=0)))
+
+    print('rho mean = {}'.format(np.mean(rho, axis=0)))
+    print('rho stdev = {}'.format(np.std(rho, axis=0)))
