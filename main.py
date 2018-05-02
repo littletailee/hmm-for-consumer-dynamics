@@ -136,7 +136,7 @@ if __name__ == '__main__':
     a_it, x_it, y_it, z_it = read_data()
     a_it = a_it[:, :, [0, 1]]
     # a_it[:, :, 2] = (a_it[:, :, 2] - 1987) / 8
-    x_it = (x_it - 18) / 8
+    x_it = (x_it - 18)
     T = 23
     n_batch = a_it.shape[0]
 
@@ -171,7 +171,7 @@ if __name__ == '__main__':
     hmc = zs.HMC(step_size=1e-3, n_leapfrogs=n_leapfrogs,
                  adapt_step_size=adapt_step_size,
                  adapt_mass=adapt_mass,
-                 target_acceptance_rate=0.65)
+                 target_acceptance_rate=0.8)
 
     sample_op, hmc_info = hmc.sample(
         log_joint, {'y': y}, {'beta': beta, 'beta0': beta0, 'delta': delta, 'rho': rho})
@@ -237,7 +237,8 @@ if __name__ == '__main__':
     print(log_prob)
 
     log_prob_data = sess.run(log_joint({'y': y, 'beta': beta, 'beta0': beta0,
-                                        'delta': delta, 'rho': rho}, ['y']))
+                                        'delta': delta, 'rho': rho}, ['y']),
+                             feed_dict={y: y_it, x: x_it, a: a_it, z: z_it})
     print(log_prob_data)
 
     sess.close()
@@ -246,6 +247,9 @@ if __name__ == '__main__':
     beta0 = np.stack(beta0_samples, axis=1)
     delta = np.stack(delta_samples, axis=1)
     rho = np.stack(rho_samples, axis=1)
+
+    np.savez_compressed('param.npz', beta=beta,
+                        beta0=beta0, delta=delta, rho=rho)
 
     print('beta mean = {}'.format(np.mean(beta, axis=1)))
     print('beta stdev = {}'.format(np.std(beta, axis=1)))
@@ -256,21 +260,5 @@ if __name__ == '__main__':
     # print('delta mean = {}'.format(np.mean(delta, axis=0)))
     # print('delta stdev = {}'.format(np.std(delta, axis=0)))
 
-    # print('rho mean = {}'.format(np.mean(rho, axis=0)))
-    # print('rho stdev = {}'.format(np.std(rho, axis=0)))
-
-    index = log_prob > log_prob.mean()
-
-    beta = np.vstack(beta_samples[index])
-    beta0 = np.vstack(beta0_samples[index])
-    delta = np.vstack(delta_samples[index])
-    rho = np.vstack(rho_samples[index])
-
-    print('beta mean = {}'.format(np.mean(beta, axis=0)))
-    print('beta stdev = {}'.format(np.std(beta, axis=0)))
-
-    print('beta0 mean = {}'.format(np.mean(beta0, axis=0)))
-    print('beta0 stdev = {}'.format(np.std(beta0, axis=0)))
-
-    print('rho mean = {}'.format(np.mean(rho, axis=0)))
-    print('rho stdev = {}'.format(np.std(rho, axis=0)))
+    print('rho mean = {}'.format(np.mean(rho, axis=1)))
+    print('rho stdev = {}'.format(np.std(rho, axis=1)))
