@@ -104,12 +104,14 @@ def hmm(observed, x, a, z, n_batch, n_steps, n_particles):
 
             logits = tf.reduce_sum(a[tf.newaxis, :, i, tf.newaxis, tf.newaxis, :] *
                                    rho[:, tf.newaxis, :, tf.newaxis, :], axis=4) + mu
-            Q = tf.stack([
-                tf.sigmoid(logits[:, :, :, 0]),
-                tf.sigmoid(logits[:, :, :, 1]) -
-                tf.sigmoid(logits[:, :, :, 0]),
-                1 - tf.sigmoid(logits[:, :, :, 1])
-            ], axis=3)
+            Q = tf.nn.softmax(
+                tf.concat([logits, tf.zeros_like(logits[:, :, :, 0, tf.newaxis])], axis=3), axis=3)
+            # Q=tf.stack([
+            #     tf.sigmoid(logits[:, :, :, 0]),
+            #     tf.sigmoid(logits[:, :, :, 1]) -
+            #     tf.sigmoid(logits[:, :, :, 0]),
+            #     1 - tf.sigmoid(logits[:, :, :, 1])
+            # ], axis = 3)
             # Q = tf.nn.softmax(logits, axis=3)
             prob = tf.reduce_sum(
                 tf.multiply(Q, prob[:, :, :, tf.newaxis]),
@@ -143,7 +145,7 @@ if __name__ == '__main__':
     n_chains = 10
     n_burnin = 10000
     n_sample = 1000
-    n_leapfrogs = 10
+    n_leapfrogs = 5
 
     x = tf.placeholder(tf.float32, shape=[n_batch, T, X_DIM])
     a = tf.placeholder(tf.float32, shape=[n_batch, T, A_DIM])
@@ -184,16 +186,6 @@ if __name__ == '__main__':
 
     sess = tf.Session()
     sess.run(tf.global_variables_initializer())
-
-    # lr_value = 1e-2
-    # for i in range(1000):
-    #     if i > 100:
-    #         lr_value = 1e-3
-    #     if i > 500:
-    #         lr_value = 1e-4
-    #     _, loss = sess.run([train_op, loss_op], feed_dict={
-    #                        lr: lr_value, y: y_it, x: x_it, a: a_it, z: z_it})
-    #     print('Iter {}: Loss = {}'.format(i, loss))
 
     print('Burning...')
     for i in range(n_burnin):
@@ -257,8 +249,8 @@ if __name__ == '__main__':
     print('beta0 mean = {}'.format(np.mean(beta0, axis=1)))
     print('beta0 stdev = {}'.format(np.std(beta0, axis=1)))
 
-    # print('delta mean = {}'.format(np.mean(delta, axis=0)))
-    # print('delta stdev = {}'.format(np.std(delta, axis=0)))
+    print('delta mean = {}'.format(np.mean(delta, axis=1)))
+    print('delta stdev = {}'.format(np.std(delta, axis=1)))
 
     print('rho mean = {}'.format(np.mean(rho, axis=1)))
     print('rho stdev = {}'.format(np.std(rho, axis=1)))
